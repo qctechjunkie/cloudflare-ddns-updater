@@ -1,16 +1,19 @@
 #!/bin/bash
 ## change to "bin/sh" when necessary
 
-auth_email=""                                       # The email used to login 'https://dash.cloudflare.com'
-auth_method="token"                                 # Set to "global" for Global API Key or "token" for Scoped API Token
-auth_key=""                                         # Your API Token or Global API Key
-zone_identifier=""                                  # Can be found in the "Overview" tab of your domain
-record_name=""                                      # Which record you want to be synced
-ttl=3600                                            # Set the DNS TTL (seconds)
-proxy="false"                                       # Set the proxy to true or false
-sitename=""                                         # Title of site "Example Site"
-slackuri=""                                         # URI for Slack WebHook "https://hooks.slack.com/services/xxxxx"
-discorduri=""                                       # URI for Discord WebHook "https://discordapp.com/api/webhooks/xxxxx"
+###########################################
+## Configuration
+###########################################
+readonly AUTH_EMAIL=""                                    # The email used to login 'https://dash.cloudflare.com'
+readonly AUTH_METHOD=""                                   # Set to "global" for Global API Key or "token" for Scoped API Token
+readonly AUTH_KEY=""                                      # Your API Token or Global API Key
+readonly ZONE_IDENTIFIER=""                               # Can be found in the "Overview" tab of your domain
+readonly RECORD_NAME=""                                   # Which record you want to be synced
+readonly TTL=3600                                         # Set the DNS TTL (seconds)
+readonly PROXY="true"                                     # Set the proxy to true or false
+readonly SITENAME=""                                      # Title of site "Example Site"
+readonly SLACK_URI=""                                     # URI for Slack WebHook
+readonly DISCORD_URI=""                                   # URI for Discord WebHook
 
 ###########################################
 ## Logging function
@@ -19,7 +22,7 @@ log() {
     local level="$1"
     local message="$2"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    logger -s "DDNS Updater: [$timestamp] [$level] [$record_name] $message"
+    logger -s "DDNS Updater: [$timestamp] [$level] [$RECORD_NAME] $message"
 }
 
 ###########################################
@@ -32,13 +35,13 @@ send_slack_notification() {
     local old_ip="$4"
     local new_ip="$5"
     
-    [[ -z "$slackuri" ]] && return
+    [[ -z "$SLACK_URI" ]] && return
     
     local emoji=":white_check_mark:"
     [[ "$status" == "failure" ]] && emoji=":x:"
     
     # Format domain as a clickable link
-    local domain_link="<https://${record_name}|${record_name}>"
+    local domain_link="<https://${RECORD_NAME}|${RECORD_NAME}>"
     
     # Build the blocks JSON
     local blocks='[
@@ -46,7 +49,7 @@ send_slack_notification() {
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": "'"$emoji $sitename - $title"'",
+                "text": "'"$emoji $SITENAME - $title"'",
                 "emoji": true
             }
         },
@@ -119,7 +122,7 @@ send_slack_notification() {
     ]'
     
     # Send to Slack
-    curl -s -X POST "$slackuri" \
+    curl -s -X POST "$SLACK_URI" \
         -H "Content-Type: application/json" \
         --data "{\"blocks\": $blocks}" > /dev/null 2>&1
 }
@@ -134,19 +137,19 @@ send_discord_notification() {
     local old_ip="$4"
     local new_ip="$5"
     
-    [[ -z "$discorduri" ]] && return
+    [[ -z "$DISCORD_URI" ]] && return
     
     local color=3066993  # Green
     [[ "$status" == "failure" ]] && color=15158332  # Red
     
     local fields='[
-        {"name": "Domain", "value": "`'"$record_name"'`", "inline": true},
+        {"name": "Domain", "value": "`'"$RECORD_NAME"'`", "inline": true},
         {"name": "Status", "value": "'"$status"'", "inline": true}
     ]'
     
     if [[ -n "$old_ip" ]] && [[ -n "$new_ip" ]]; then
         fields='[
-            {"name": "Domain", "value": "`'"$record_name"'`", "inline": true},
+            {"name": "Domain", "value": "`'"$RECORD_NAME"'`", "inline": true},
             {"name": "Status", "value": "'"$status"'", "inline": true},
             {"name": "Previous IP", "value": "`'"$old_ip"'`", "inline": true},
             {"name": "New IP", "value": "`'"$new_ip"'`", "inline": true}
@@ -156,14 +159,14 @@ send_discord_notification() {
     curl -s -H "Content-Type: application/json" -X POST \
         --data '{
             "embeds": [{
-                "title": "'"$sitename - $title"'",
+                "title": "'"$SITENAME - $title"'",
                 "description": "'"$message"'",
                 "color": '"$color"',
                 "fields": '"$fields"',
                 "footer": {"text": "Cloudflare DDNS Updater"},
                 "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
             }]
-        }' "$discorduri" > /dev/null 2>&1
+        }' "$DISCORD_URI" > /dev/null 2>&1
 }
 
 ###########################################
@@ -209,7 +212,7 @@ log "INFO" "Current public IP: $ip"
 ###########################################
 ## Check and set the proper auth header
 ###########################################
-if [[ "${auth_method}" == "global" ]]; then
+if [[ "${AUTH_METHOD}" == "global" ]]; then
     auth_header="X-Auth-Key:"
 else
     auth_header="Authorization: Bearer"
@@ -218,9 +221,9 @@ fi
 ###########################################
 ## Seek for the A record
 ###########################################
-record=$(curl -s --max-time 10 -X GET "https://api.cloudflare.com/client/v4/zones/$zone_identifier/dns_records?type=A&name=$record_name" \
-                      -H "X-Auth-Email: $auth_email" \
-                      -H "$auth_header $auth_key" \
+record=$(curl -s --max-time 10 -X GET "https://api.cloudflare.com/client/v4/zones/$ZONE_IDENTIFIER/dns_records?type=A&name=$RECORD_NAME" \
+                      -H "X-Auth-Email: $AUTH_EMAIL" \
+                      -H "$auth_header $AUTH_KEY" \
                       -H "Content-Type: application/json")
 
 ###########################################
@@ -233,7 +236,7 @@ if [[ $record == *"\"success\":false"* ]]; then
 fi
 
 if [[ $record == *"\"count\":0"* ]]; then
-    log "ERROR" "Record does not exist. Create one first: $ip for $record_name"
+    log "ERROR" "Record does not exist. Create one first: $ip for $RECORD_NAME"
     send_notification "failure" "Record Not Found" "No A record exists for this domain" "" "$ip"
     exit 1
 fi
@@ -275,11 +278,11 @@ log "INFO" "IP change detected: $old_ip -> $ip"
 ###########################################
 ## Update the DNS record
 ###########################################
-update=$(curl -s --max-time 10 -X PATCH "https://api.cloudflare.com/client/v4/zones/$zone_identifier/dns_records/$record_identifier" \
-                     -H "X-Auth-Email: $auth_email" \
-                     -H "$auth_header $auth_key" \
+update=$(curl -s --max-time 10 -X PATCH "https://api.cloudflare.com/client/v4/zones/$ZONE_IDENTIFIER/dns_records/$record_identifier" \
+                     -H "X-Auth-Email: $AUTH_EMAIL" \
+                     -H "$auth_header $AUTH_KEY" \
                      -H "Content-Type: application/json" \
-                     --data "{\"type\":\"A\",\"name\":\"$record_name\",\"content\":\"$ip\",\"ttl\":$ttl,\"proxied\":${proxy}}")
+                     --data "{\"type\":\"A\",\"name\":\"$RECORD_NAME\",\"content\":\"$ip\",\"TTL\":$TTL,\"proxied\":${PROXY}}")
 
 ###########################################
 ## Report the status
