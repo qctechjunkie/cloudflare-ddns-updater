@@ -1,0 +1,32 @@
+[Unit]
+Description=Cloudflare Dynamic DNS Updater (%i)
+Documentation=https://github.com/K0p1-Git/cloudflare-ddns-updater
+# Wait for the network stack to be fully up before starting
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# %i is replaced with the instance name (the part after @):
+#   systemctl enable cloudflare-ddns@mgsfoxhound.net.service
+#   → runs /opt/cloudflare-ddns/cloudflare-mgsfoxhound.net.sh
+#
+# Copy your configured script to the directory below, keeping the
+# cloudflare-<sitename>.sh naming convention.
+ExecStart=/opt/cloudflare-ddns/cloudflare-%i.sh
+
+# Restart on unexpected exit, but not on a clean stop (e.g. systemctl stop)
+Restart=on-failure
+RestartSec=15
+
+# Route logs to the systemd journal; each instance is identifiable by its name
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cloudflare-ddns@%i
+
+# Prevent privilege escalation
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
