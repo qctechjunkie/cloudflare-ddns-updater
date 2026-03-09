@@ -1,34 +1,36 @@
 # Cloudflare DDNS Updater
 
-A bash script to automatically update Cloudflare DNS records when your public IP address changes. Ideal for home servers, self-hosted services, and dynamic IP environments.
+A bash script that runs as a **systemd service** to automatically update Cloudflare DNS records when your public IP address changes. Ideal for home servers, self-hosted services, and dynamic IP environments.
 
-> **Note:** This is a fork of [K0p1-Git/cloudflare-ddns-updater](https://github.com/K0p1-Git/cloudflare-ddns-updater) with improvements to logging, notifications, and error handling.
+> **Note:** This is a fork of [K0p1-Git/cloudflare-ddns-updater](https://github.com/K0p1-Git/cloudflare-ddns-updater) with improvements to logging, notifications, retry logic, and service-based operation.
 
 ## Features
 
-- 🔄 Automatically detects public IP changes
-- ☁️ Updates Cloudflare DNS A records via API
-- 📱 Slack notifications (using modern Block Kit format)
-- 💬 Discord webhook notifications
-- 📝 Minimal logging (only logs significant events)
-- ✅ Improved error handling and validation
-- ⏱️ Curl timeouts to prevent hanging
+- Automatically detects public IP changes
+- Updates Cloudflare DNS A records via API
+- Runs as a persistent systemd service (no cron needed)
+- Slack notifications (Block Kit format)
+- Discord webhook notifications
+- Retry logic with configurable attempts and delay
+- Structured logging via systemd journal
+- Bypasses local DNS servers (e.g. AdGuard Home) for DNS lookups
 
 ## What's New in This Fork
 
 | Improvement | Description |
 |-------------|-------------|
+| **Systemd service** | Runs as a long-lived service instead of a cron job; supports multiple instances via `cloudflare-ddns@.service` |
+| **Retry logic** | Configurable `MAX_RETRIES` and `RETRY_DELAY` for transient failures |
+| **DNS server override** | `DNS_SERVER` bypasses forced local DNS (e.g. AdGuard Home) so routine checks don't pollute your query logs |
 | **Better error detection** | Validates API responses and extracted values before proceeding |
-| **Minimal logging** | Only logs IP changes and errors, not routine checks |
+| **Minimal logging** | Only logs IP changes and errors, not routine no-change checks |
 | **Slack Block Kit** | Modern notification format per current Slack API guidelines |
-| **Clickable domain links** | Domains always display as links in Slack notifications |
-| **Curl timeouts** | Added `--max-time` to prevent script from hanging |
-| **Explicit success checking** | Checks for `"success":true` instead of just absence of `"success":false` |
+| **Curl timeouts** | `--max-time` on every request prevents the script from hanging |
 
 ## Requirements
 
-- `bash` or `sh`
-- `curl`
+- `bash`
+- `curl` >= 7.86.0 (required for `--dns-servers` support)
 - Cloudflare account with API token
 
 ## Setup
@@ -42,11 +44,11 @@ A bash script to automatically update Cloudflare DNS records when your public IP
    - **Zone Resources:** Include > Specific zone > Your domain
 4. Copy the token
 
-> ⚠️ **Important:** Your API token must have **Zone.DNS Edit** permission. Without this, you'll receive a "PATCH method not allowed for the api_token authentication scheme" error [2].
+> **Important:** Your API token must have **Zone.DNS Edit** permission. Without this, you will get a "PATCH method not allowed for the api_token authentication scheme" error.
 
 ### 2. Configure the Script
 
-Copy the template and edit your configuration:
+Copy the template and fill in your values:
 
 ```bash
 cp cloudflare-template.sh cloudflare-yourdomain.sh
@@ -54,19 +56,23 @@ chmod +x cloudflare-yourdomain.sh
 nano cloudflare-yourdomain.sh
 ```
 
-Update these variables [1]:
+Update the configuration block at the top:
 
 ```bash
-auth_email="your-email@example.com"     # Cloudflare login email
-auth_method="token"                      # Use "token" for API token
-auth_key="your-api-token"               # Your API token
-zone_identifier="your-zone-id"          # Found in domain Overview tab
-record_name="subdomain.example.com"     # DNS record to update
-ttl=3600                                # DNS TTL in seconds
-proxy="false"                           # Cloudflare proxy (true/false)
-sitename="My Site"                      # For notifications
-slackuri=""                             # Slack webhook URL (optional)
-discorduri=""                           # Discord webhook URL (optional)
+AUTH_EMAIL="your-email@example.com"       # Cloudflare login email
+AUTH_METHOD="token"                        # "token" for API token, "global" for Global API Key
+AUTH_KEY="your-api-token"                 # Your API token or Global API Key
+ZONE_IDENTIFIER="your-zone-id"            # Found in domain Overview tab (see step 3)
+RECORD_NAME="subdomain.example.com"       # DNS A record to keep updated
+TTL=3600                                  # DNS TTL in seconds
+PROXY="false"                             # Cloudflare proxy (true/false)
+SITENAME="My Site"                        # Used in notification titles
+SLACK_URI=""                              # Slack webhook URL (optional)
+DISCORD_URI=""                            # Discord webhook URL (optional)
+CHECK_INTERVAL=60                         # Seconds between IP checks
+MAX_RETRIES=3                             # Attempts before sending a failure alert
+RETRY_DELAY=30                            # Seconds between retry attempts
+DNS_SERVER="1.1.1.1"                      # DNS server for lookups (see DNS Server Override below)
 ```
 
 ### 3. Find Your Zone Identifier
@@ -76,79 +82,153 @@ discorduri=""                           # Discord webhook URL (optional)
 3. Scroll down on the **Overview** tab
 4. Copy the **Zone ID** from the right sidebar
 
-### 4. Set Up a Cron Job
+### 4. Install the Systemd Service
 
-Run the script every minute:
+Copy your configured script and the service unit to their target locations:
 
 ```bash
-crontab -e
+# Create the script directory
+sudo mkdir -p /opt/cloudflare-ddns
+
+# Copy your configured script (repeat for each domain)
+sudo cp cloudflare-yourdomain.sh /opt/cloudflare-ddns/cloudflare-yourdomain.sh
+sudo chmod +x /opt/cloudflare-ddns/cloudflare-yourdomain.sh
+
+# Install the service template
+sudo cp cloudflare-ddns@.service /etc/systemd/system/
+sudo systemctl daemon-reload
 ```
 
-Add:
+The service file is a **systemd template** (`@`). The part after `@` in the instance name maps directly to a script in `/opt/cloudflare-ddns/`:
 
 ```
-* * * * * /path/to/cloudflare-yourdomain.sh
+cloudflare-ddns@yourdomain.service  →  /opt/cloudflare-ddns/cloudflare-yourdomain.sh
+```
+
+### 5. Enable and Start the Service
+
+```bash
+# Enable to start on boot, and start immediately
+sudo systemctl enable --now cloudflare-ddns@yourdomain.service
+```
+
+Check it is running:
+
+```bash
+sudo systemctl status cloudflare-ddns@yourdomain.service
 ```
 
 ## Multiple Domains
 
-To update multiple domains, create a separate script for each:
+Create a separate configured script for each domain and enable a separate service instance for each:
 
 ```bash
-cp cloudflare-template.sh cloudflare-domain1.sh
-cp cloudflare-template.sh cloudflare-domain2.sh
+sudo cp cloudflare-template.sh /opt/cloudflare-ddns/cloudflare-domain1.sh
+sudo cp cloudflare-template.sh /opt/cloudflare-ddns/cloudflare-domain2.sh
+# edit each script with the correct credentials and RECORD_NAME
+
+sudo systemctl enable --now cloudflare-ddns@domain1.service
+sudo systemctl enable --now cloudflare-ddns@domain2.service
 ```
 
-Then add separate cron entries for each script.
+Each instance runs independently and is identifiable by name in the journal.
+
+## DNS Server Override
+
+By default, every `curl` request resolves hostnames using your system's configured DNS server. If you run a local DNS filter like AdGuard Home that intercepts all DNS queries, every 60-second IP check will show up in its query log.
+
+Set `DNS_SERVER` to any upstream resolver to bypass it:
+
+```bash
+DNS_SERVER="1.1.1.1"    # Cloudflare (default)
+DNS_SERVER="8.8.8.8"    # Google
+DNS_SERVER=""           # Leave empty to use system default
+```
+
+This applies to all outbound requests — IP detection, Cloudflare API calls, and webhook notifications.
+
+> **Requires curl >= 7.86.0.** Check with `curl --version`. Raspberry Pi OS Bookworm (Debian 12) ships a compatible version; Bullseye may need a curl upgrade.
 
 ## Notifications
 
 ### Slack
 
 1. Create an [Incoming Webhook](https://api.slack.com/messaging/webhooks) in your Slack workspace
-2. Add the webhook URL to `slackuri`
+2. Set `SLACK_URI` to the webhook URL
 
-Notifications use Slack's modern Block Kit format for better formatting and consistent domain linking.
+Notifications use Slack's Block Kit format with clickable domain links.
 
 ### Discord
 
 1. In your Discord channel, go to **Settings > Integrations > Webhooks**
 2. Create a webhook and copy the URL
-3. Add it to `discorduri`
+3. Set `DISCORD_URI` to the webhook URL
+
+Notifications are only sent on IP change (success) or repeated failure — not on routine no-change checks.
 
 ## Logging
 
-The script uses `logger` for system logging. Logs only include:
+The script logs via `logger` which routes to the systemd journal. Only significant events are logged:
 
-- IP change detections
-- Successful updates
-- Errors and failures
+- Service start/stop
+- IP change detected and applied
+- Retry attempts and failures
 
-Routine "no change" checks are not logged to prevent log bloat when running every minute.
-
-View logs with:
+To follow logs for a specific instance:
 
 ```bash
-grep "DDNS Updater" /var/log/syslog
+journalctl -u cloudflare-ddns@yourdomain.service -f
 ```
+
+To view recent logs:
+
+```bash
+journalctl -u cloudflare-ddns@yourdomain.service -n 50
+```
+
+To search all DDNS logs across instances:
+
+```bash
+journalctl -g "DDNS Updater"
+```
+
+## Managing the Service
+
+```bash
+# Start / stop / restart
+sudo systemctl start cloudflare-ddns@yourdomain.service
+sudo systemctl stop cloudflare-ddns@yourdomain.service
+sudo systemctl restart cloudflare-ddns@yourdomain.service
+
+# Disable autostart
+sudo systemctl disable cloudflare-ddns@yourdomain.service
+
+# Check status
+sudo systemctl status cloudflare-ddns@yourdomain.service
+```
+
+## How It Works
+
+Each service instance runs a continuous loop:
+
+1. **IP Detection** — Fetches your public IP from Cloudflare's trace endpoint, with fallbacks to `ipify.org` and `icanhazip.com`
+2. **Record Lookup** — Queries Cloudflare API for the current A record value
+3. **Comparison** — If the IPs match, the loop sleeps for `CHECK_INTERVAL` seconds and repeats
+4. **Update** — If they differ, the A record is updated via Cloudflare's API
+5. **Notification** — Sends a Slack/Discord notification on successful update or repeated failure
+6. **Retry** — Each step retries up to `MAX_RETRIES` times (with `RETRY_DELAY` seconds between attempts) before sending a failure alert
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| "Failed to find a valid IP" | Check internet connection; IP detection services may be temporarily unavailable [2] |
-| "PATCH method not allowed for the api_token authentication scheme" | Regenerate API token with **Zone.DNS Edit** permission [2] |
-| "Record does not exist" | Create an A record in Cloudflare dashboard first |
-| Empty record identifier in logs (e.g., `DDNS failed for  (IP)`) | API response parsing failed; verify zone_identifier and record_name are correct [2] |
-| Script hangs | Curl timeouts have been added; check network connectivity |
-
-## How It Works
-
-1. **IP Detection**: The script first attempts to get your public IP from Cloudflare's trace endpoint, with fallbacks to ipify.org and icanhazip.com [1]
-2. **Record Lookup**: Queries the Cloudflare API for the existing A record
-3. **Comparison**: Compares the current public IP with the DNS record
-4. **Update**: If the IPs differ, updates the DNS record via Cloudflare's API
-5. **Notification**: Sends a Slack/Discord notification on success or failure
+| Service fails to start | Check `journalctl -u cloudflare-ddns@yourdomain.service` for errors; verify the script path and permissions |
+| "Failed to find a valid IP" | Check internet connectivity; IP detection services may be temporarily unavailable |
+| "PATCH method not allowed for the api_token authentication scheme" | Regenerate API token with **Zone.DNS Edit** permission |
+| "Record does not exist" | Create an A record manually in the Cloudflare dashboard first |
+| DNS server override not working | Verify `curl --version` shows >= 7.86.0; the `--dns-servers` flag requires c-ares support |
+| AdGuard Home still showing queries | Ensure `DNS_SERVER` is set to a non-empty value in your script |
+| Script hangs | Each `curl` call has `--max-time 10`; check network connectivity if retries are exhausted |
 
 ## Credits
 

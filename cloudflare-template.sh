@@ -17,8 +17,13 @@ readonly DISCORD_URI=""                                   # URI for Discord WebH
 readonly CHECK_INTERVAL=60                                # Seconds between IP checks when running as a service
 readonly MAX_RETRIES=3                                    # Number of attempts before sending a failure alert
 readonly RETRY_DELAY=30                                   # Seconds to wait between retry attempts
+readonly DNS_SERVER="1.1.1.1"                            # DNS server for curl lookups (bypasses forced local DNS e.g. AdGuard Home). Leave empty to use system default.
 
 readonly ipv4_regex='([01]?[0-9]?[0-9]|2[0-4][0-9]|25[0-5])\.([01]?[0-9]?[0-9]|2[0-4][0-9]|25[0-5])\.([01]?[0-9]?[0-9]|2[0-4][0-9]|25[0-5])\.([01]?[0-9]?[0-9]|2[0-4][0-9]|25[0-5])'
+
+# Build optional DNS flag array (requires curl >= 7.86.0)
+DNS_ARGS=()
+[[ -n "$DNS_SERVER" ]] && DNS_ARGS=(--dns-servers "$DNS_SERVER")
 
 ###########################################
 ## Logging function
@@ -128,7 +133,7 @@ send_slack_notification() {
     ]'
 
     # Send to Slack
-    curl -s -X POST "$SLACK_URI" \
+    curl -s "${DNS_ARGS[@]}" -X POST "$SLACK_URI" \
         -H "Content-Type: application/json" \
         --data "{\"blocks\": $blocks}" > /dev/null 2>&1
 }
@@ -162,7 +167,7 @@ send_discord_notification() {
         ]'
     fi
 
-    curl -s -H "Content-Type: application/json" -X POST \
+    curl -s "${DNS_ARGS[@]}" -H "Content-Type: application/json" -X POST \
         --data '{
             "embeds": [{
                 "title": "'"$SITENAME - $title"'",
@@ -196,19 +201,19 @@ send_notification() {
 get_public_ip() {
     local ip
 
-    ip=$(curl -s -4 --max-time 10 https://cloudflare.com/cdn-cgi/trace | grep -E '^ip')
+    ip=$(curl -s -4 "${DNS_ARGS[@]}" --max-time 10 https://cloudflare.com/cdn-cgi/trace | grep -E '^ip')
     if [[ $? -eq 0 ]] && [[ -n "$ip" ]]; then
         echo "$ip" | sed -E "s/^ip=($ipv4_regex)$/\1/"
         return 0
     fi
 
-    ip=$(curl -s --max-time 10 https://api.ipify.org)
+    ip=$(curl -s "${DNS_ARGS[@]}" --max-time 10 https://api.ipify.org)
     if [[ -n "$ip" ]]; then
         echo "$ip"
         return 0
     fi
 
-    curl -s --max-time 10 https://ipv4.icanhazip.com
+    curl -s "${DNS_ARGS[@]}" --max-time 10 https://ipv4.icanhazip.com
 }
 
 ###########################################
@@ -252,7 +257,7 @@ perform_check() {
     local record
     attempt=1
     while true; do
-        record=$(curl -s --max-time 10 -X GET \
+        record=$(curl -s "${DNS_ARGS[@]}" --max-time 10 -X GET \
             "https://api.cloudflare.com/client/v4/zones/$ZONE_IDENTIFIER/dns_records?type=A&name=$RECORD_NAME" \
             -H "X-Auth-Email: $AUTH_EMAIL" \
             -H "$auth_header $AUTH_KEY" \
@@ -315,7 +320,7 @@ perform_check() {
     local update
     attempt=1
     while true; do
-        update=$(curl -s --max-time 10 -X PATCH \
+        update=$(curl -s "${DNS_ARGS[@]}" --max-time 10 -X PATCH \
             "https://api.cloudflare.com/client/v4/zones/$ZONE_IDENTIFIER/dns_records/$record_identifier" \
             -H "X-Auth-Email: $AUTH_EMAIL" \
             -H "$auth_header $AUTH_KEY" \
