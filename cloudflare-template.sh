@@ -207,7 +207,7 @@ send_webhook_notification() {
 
     [[ -z "$WEBHOOK_URI" ]] && return
 
-    curl -s "${DNS_ARGS[@]}" -X POST "$WEBHOOK_URI" \
+    curl -s -X POST "$WEBHOOK_URI" \
         -H "Content-Type: application/json" \
         --data "{
             \"status\": \"$status\",
