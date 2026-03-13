@@ -14,6 +14,7 @@ readonly PROXY="true"                                     # Set the proxy to tru
 readonly SITENAME=""                                      # Title of site "Example Site"
 readonly SLACK_URI=""                                     # URI for Slack WebHook
 readonly DISCORD_URI=""                                   # URI for Discord WebHook
+readonly WEBHOOK_URI=""                                   # URI for generic WebHook (e.g. Home Assistant: http://ha.local:8123/api/webhook/<id>)
 readonly CHECK_INTERVAL=60                                # Seconds between IP checks when running as a service
 readonly MAX_RETRIES=3                                    # Number of attempts before sending a failure alert
 readonly RETRY_DELAY=30                                   # Seconds to wait between retry attempts
@@ -21,9 +22,21 @@ readonly DNS_SERVER="1.1.1.1"                            # DNS server for curl l
 
 readonly ipv4_regex='([01]?[0-9]?[0-9]|2[0-4][0-9]|25[0-5])\.([01]?[0-9]?[0-9]|2[0-4][0-9]|25[0-5])\.([01]?[0-9]?[0-9]|2[0-4][0-9]|25[0-5])\.([01]?[0-9]?[0-9]|2[0-4][0-9]|25[0-5])'
 
-# Build optional DNS flag array (requires curl >= 7.86.0)
+# Build optional DNS flag array.
+# Prefers --dns-servers (curl >= 7.86.0 with c-ares); falls back to --doh-url
+# (DNS over HTTPS, available in any curl built with SSL) to bypass local DNS
+# servers such as AdGuard Home. Leave DNS_SERVER empty to use system default.
 DNS_ARGS=()
-[[ -n "$DNS_SERVER" ]] && DNS_ARGS=(--dns-servers "$DNS_SERVER")
+if [[ -n "$DNS_SERVER" ]]; then
+    if curl --dns-servers "$DNS_SERVER" --version > /dev/null 2>&1; then
+        DNS_ARGS=(--dns-servers "$DNS_SERVER")
+    elif curl --doh-url "https://${DNS_SERVER}/dns-query" --version > /dev/null 2>&1; then
+        DNS_ARGS=(--doh-url "https://${DNS_SERVER}/dns-query")
+        echo "INFO: curl lacks c-ares; using DNS over HTTPS (${DNS_SERVER}) to bypass local DNS." >&2
+    else
+        echo "WARNING: curl supports neither --dns-servers nor --doh-url. DNS_SERVER setting will be ignored." >&2
+    fi
+fi
 
 ###########################################
 ## Logging function
@@ -181,6 +194,34 @@ send_discord_notification() {
 }
 
 ###########################################
+## Generic webhook notification function
+## Sends a JSON POST compatible with Home
+## Assistant webhook automations.
+###########################################
+send_webhook_notification() {
+    local status="$1"
+    local title="$2"
+    local message="$3"
+    local old_ip="$4"
+    local new_ip="$5"
+
+    [[ -z "$WEBHOOK_URI" ]] && return
+
+    curl -s "${DNS_ARGS[@]}" -X POST "$WEBHOOK_URI" \
+        -H "Content-Type: application/json" \
+        --data "{
+            \"status\": \"$status\",
+            \"title\": \"$title\",
+            \"message\": \"$message\",
+            \"site\": \"$SITENAME\",
+            \"domain\": \"$RECORD_NAME\",
+            \"old_ip\": \"$old_ip\",
+            \"new_ip\": \"$new_ip\",
+            \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+        }" > /dev/null 2>&1
+}
+
+###########################################
 ## Combined notification function
 ###########################################
 send_notification() {
@@ -192,6 +233,7 @@ send_notification() {
 
     send_slack_notification "$status" "$title" "$message" "$old_ip" "$new_ip"
     send_discord_notification "$status" "$title" "$message" "$old_ip" "$new_ip"
+    send_webhook_notification "$status" "$title" "$message" "$old_ip" "$new_ip"
 }
 
 ###########################################
@@ -201,9 +243,10 @@ send_notification() {
 get_public_ip() {
     local ip
 
-    ip=$(curl -s -4 "${DNS_ARGS[@]}" --max-time 10 https://cloudflare.com/cdn-cgi/trace | grep -E '^ip')
-    if [[ $? -eq 0 ]] && [[ -n "$ip" ]]; then
-        echo "$ip" | sed -E "s/^ip=($ipv4_regex)$/\1/"
+    ip=$(curl -s -4 "${DNS_ARGS[@]}" --max-time 10 https://cloudflare.com/cdn-cgi/trace \
+        | grep -oE "^ip=$ipv4_regex" | grep -oE "$ipv4_regex")
+    if [[ -n "$ip" ]]; then
+        echo "$ip"
         return 0
     fi
 

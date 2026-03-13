@@ -11,6 +11,7 @@ A bash script that runs as a **systemd service** to automatically update Cloudfl
 - Runs as a persistent systemd service (no cron needed)
 - Slack notifications (Block Kit format)
 - Discord webhook notifications
+- Generic webhook notifications (e.g. Home Assistant)
 - Retry logic with configurable attempts and delay
 - Structured logging via systemd journal
 - Bypasses local DNS servers (e.g. AdGuard Home) for DNS lookups
@@ -25,6 +26,7 @@ A bash script that runs as a **systemd service** to automatically update Cloudfl
 | **Better error detection** | Validates API responses and extracted values before proceeding |
 | **Minimal logging** | Only logs IP changes and errors, not routine no-change checks |
 | **Slack Block Kit** | Modern notification format per current Slack API guidelines |
+| **Generic webhook** | Sends a JSON POST to any webhook URL (e.g. Home Assistant automations) |
 | **Curl timeouts** | `--max-time` on every request prevents the script from hanging |
 
 ## Requirements
@@ -69,6 +71,7 @@ PROXY="false"                             # Cloudflare proxy (true/false)
 SITENAME="My Site"                        # Used in notification titles
 SLACK_URI=""                              # Slack webhook URL (optional)
 DISCORD_URI=""                            # Discord webhook URL (optional)
+WEBHOOK_URI=""                            # Generic webhook URL (optional, e.g. Home Assistant)
 CHECK_INTERVAL=60                         # Seconds between IP checks
 MAX_RETRIES=3                             # Attempts before sending a failure alert
 RETRY_DELAY=30                            # Seconds between retry attempts
@@ -164,6 +167,35 @@ Notifications use Slack's Block Kit format with clickable domain links.
 2. Create a webhook and copy the URL
 3. Set `DISCORD_URI` to the webhook URL
 
+### Generic Webhook (Home Assistant)
+
+Set `WEBHOOK_URI` to any HTTP endpoint that accepts a JSON POST. Leave it empty to disable.
+
+```bash
+WEBHOOK_URI="http://homeassistant.local:8123/api/webhook/ddns-update"
+```
+
+The payload sent on every notification event:
+
+```json
+{
+  "status": "success",
+  "title": "DNS Updated",
+  "message": "IP address has been updated successfully",
+  "site": "My Site",
+  "domain": "example.com",
+  "old_ip": "1.2.3.4",
+  "new_ip": "5.6.7.8",
+  "timestamp": "2026-03-12T10:00:00Z"
+}
+```
+
+**Home Assistant setup:**
+
+1. In HA, go to **Settings > Automations > Create Automation > When: Webhook**
+2. Copy the generated webhook ID and set `WEBHOOK_URI` to `http://<ha-ip>:8123/api/webhook/<id>`
+3. Use `{{ trigger.json.status }}`, `{{ trigger.json.new_ip }}`, `{{ trigger.json.domain }}`, etc. in your automation actions
+
 Notifications are only sent on IP change (success) or repeated failure — not on routine no-change checks.
 
 ## Logging
@@ -215,7 +247,7 @@ Each service instance runs a continuous loop:
 2. **Record Lookup** — Queries Cloudflare API for the current A record value
 3. **Comparison** — If the IPs match, the loop sleeps for `CHECK_INTERVAL` seconds and repeats
 4. **Update** — If they differ, the A record is updated via Cloudflare's API
-5. **Notification** — Sends a Slack/Discord notification on successful update or repeated failure
+5. **Notification** — Sends a Slack/Discord/webhook notification on successful update or repeated failure
 6. **Retry** — Each step retries up to `MAX_RETRIES` times (with `RETRY_DELAY` seconds between attempts) before sending a failure alert
 
 ## Troubleshooting
